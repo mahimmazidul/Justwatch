@@ -1,0 +1,122 @@
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  # ------------------------------------------------------------------- verify
+  # Runs unconditionally and needs no credentials: builds the Blazor app, starts
+  # the real Worker locally, and replays the app's full call chain against the
+  # live JustWatch API. A green run here means a deploy would serve a working app.
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Wrangler 4 refuses to start on the Node 20 that ubuntu-latest ships.
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: cloudflare
+        run: npm ci || npm install
+
+      # Publishes the Blazor app into cloudflare/dist.
+      - name: Build
+        working-directory: cloudflare
+        run: ./build.sh
+
+      - name: Start the Worker
+        working-directory: cloudflare
+        run: npx wrangler dev --ip 127.0.0.1 --port 8787 &
+
+      - name: Wait for the Worker to come up
+        run: |
+          for i in $(seq 1 90); do
+            curl -sf http://127.0.0.1:8787/ >/dev/null && echo "ready after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "Worker did not start within 90s"; exit 1
+
+      - name: Run the verification suite
+        working-directory: cloudflare
+        run: python3 verify.py http://127.0.0.1:8787 workers
+
+  # ------------------------------------------------------------------- deploy
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: verify
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: cloudflare
+        run: npm ci || npm install
+
+      - name: Build
+        working-directory: cloudflare
+        run: ./build.sh
+
+      # Skip cleanly rather than failing while the secrets are still unset, so a
+      # fresh clone does not show a red X on every push. See the README section
+      # "Cloudflare credentials" for where to get both values.
+      - name: Check Cloudflare credentials are configured
+        id: creds
+        env:
+          API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$API_TOKEN" ] && [ -n "$ACCOUNT_ID" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy skipped. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to enable it."
+          fi
+
+      # ---------------------------------------------------------------- Workers
+      # Primary target: one Worker serving both the app and its proxy.
+      - name: Deploy to Workers
+        if: steps.creds.outputs.available == 'true'
+        uses: cloudflare/wrangler-action@v4
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: cloudflare
+          command: deploy
+
+      # ----------------------------------------------------------------- Pages
+      # Alternative target, off by default. To use it instead of the step above:
+      #   1. build with ./build.sh --pages so dist/_routes.json is emitted,
+      #   2. create the Pages project once (wrangler pages project create
+      #      justwatch-search), then swap the command below in.
+      # - name: Deploy to Pages
+      #   if: steps.creds.outputs.available == 'true'
+      #   uses: cloudflare/wrangler-action@v4
+      #   with:
+      #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     workingDirectory: cloudflare
+      #     command: pages deploy dist --project-name justwatch-search

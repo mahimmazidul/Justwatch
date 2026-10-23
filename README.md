@@ -57,16 +57,10 @@ cloudflare/  Everything needed to deploy it as one Cloudflare program
   ├─ wrangler.jsonc              Worker name, assets dir, SPA fallback, routing, vars
   ├─ build.sh                    dotnet publish -> cloudflare/dist
   └─ verify.py                   36-check end-to-end test suite
-ci/deploy.yml                    Cloudflare deploy + verify workflow (see note below)
+.github/workflows/deploy.yml     Push-to-deploy: verify on every push, then deploy
 LICENSE                          GNU GPL v3.0 (required by the upstream app)
 CREDITS.md                       Attribution and licence details
 ```
-
-`ci/deploy.yml` is **not active yet**. GitHub only executes workflows from
-`.github/workflows/`, and pushing there needs a token with the *Workflows*
-permission. The header of that file has the two-step instructions to move it into
-place — or paste it through the GitHub web editor, which is not subject to the
-restriction.
 
 ## Prerequisites
 
@@ -88,6 +82,82 @@ npm run dev          # publishes the app, then runs the real Worker on :8787
 > linker is killed by the OOM reaper with `error MSB6006: "dotnet" exited with
 > code 137`. Close other processes, or add `-p:PublishTrimmed=false` to the
 > `dotnet publish` line in `build.sh`.
+
+## Cloudflare credentials
+
+Deploying needs two values. Neither requires a paid plan.
+
+### 1. Account ID
+
+Not a secret — it appears in your dashboard URL and is safe to store as a CI
+variable.
+
+1. Sign in at <https://dash.cloudflare.com> and pick your account.
+2. On the **Overview** page it is in the right-hand sidebar as **Account ID**, with
+   a copy button. It is also the long hex string in the address bar:
+   `dash.cloudflare.com/<ACCOUNT_ID>/...`
+3. Or, once Wrangler is authenticated, `npx wrangler whoami` prints it.
+
+Docs: [Find account and zone IDs](https://developers.cloudflare.com/fundamentals/setup/find-account-and-zone-ids/)
+
+### 2. API token
+
+This **is** a secret. Never commit it — `.gitignore` here blocks `.dev.vars` and
+`.env` for exactly that reason.
+
+1. Go to [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens)
+   (or: avatar → **My Profile** → **API Tokens**).
+2. **Create Token**.
+3. Under **API token templates**, find **Edit Cloudflare Workers** → **Use template**.
+4. Under **Account Resources**, select your account. Leave **Zone Resources** alone
+   unless you are attaching a custom domain on one.
+5. **Continue to summary** → **Create Token**, then copy it — it is shown once.
+
+That template grants exactly what `wrangler deploy` needs and nothing more:
+
+| Permission | Resource | Access |
+|---|---|---|
+| Workers Scripts | Account | Write |
+| Workers Routes | Zone | Write |
+| Workers KV Storage | Account | Write |
+| Workers R2 Storage | Account | Write |
+| Workers Tail | Account | Read |
+| Account Settings | Account | Read |
+| User Details / User Memberships | User | Read |
+
+Source: [API token templates](https://developers.cloudflare.com/fundamentals/api/reference/template/).
+Do **not** use the *Read All Resources* template — it can read everything and write
+nothing, so `wrangler deploy` fails with an authentication error.
+
+If you deploy to **Pages** as well, add the **Cloudflare Pages → Edit** permission to
+the same token.
+
+Docs: [Create API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) ·
+[GitHub Actions for Workers](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
+
+### Where to put them
+
+**For CI** (`.github/workflows/deploy.yml`): GitHub repo → **Settings** → **Secrets and
+variables** → **Actions** → **New repository secret**, twice:
+
+| Secret name | Value |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | the token from step 2 |
+| `CLOUDFLARE_ACCOUNT_ID` | the account ID from step 1 |
+
+Until both exist, the deploy job skips itself with a notice instead of failing, so
+pushes stay green. The `verify` job always runs and needs no credentials.
+
+**For local deploys**, either is fine:
+
+```bash
+npx wrangler login                                  # interactive OAuth, no token needed
+# or
+export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
+```
+
+**For local `wrangler dev`**, secrets go in `cloudflare/.dev.vars` — already
+gitignored. The `vars` in `wrangler.jsonc` are not secrets and are safe to commit.
 
 ## Deploy — Workers (recommended)
 
