@@ -57,10 +57,16 @@ cloudflare/  Everything needed to deploy it as one Cloudflare program
   ├─ wrangler.jsonc              Worker name, assets dir, SPA fallback, routing, vars
   ├─ build.sh                    dotnet publish -> cloudflare/dist
   └─ verify.py                   36-check end-to-end test suite
-.github/workflows/deploy.yml     Push-to-deploy
+ci/deploy.yml                    Cloudflare deploy + verify workflow (see note below)
 LICENSE                          GNU GPL v3.0 (required by the upstream app)
 CREDITS.md                       Attribution and licence details
 ```
+
+`ci/deploy.yml` is **not active yet**. GitHub only executes workflows from
+`.github/workflows/`, and pushing there needs a token with the *Workflows*
+permission. The header of that file has the two-step instructions to move it into
+place — or paste it through the GitHub web editor, which is not subject to the
+restriction.
 
 ## Prerequisites
 

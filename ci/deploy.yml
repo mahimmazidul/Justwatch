@@ -1,0 +1,140 @@
+# ---------------------------------------------------------------------------
+# NOT YET ACTIVE.
+#
+# GitHub only runs workflows from .github/workflows/. This file lives in ci/
+# because pushing anything under .github/workflows/ requires a token with the
+# "Workflows" permission, and the token used for the initial push did not have
+# it -- GitHub rejected the push with:
+#
+#   refusing to allow a Personal Access Token to create or update workflow
+#   `.github/workflows/deploy.yml` without `workflow` scope
+#
+# To activate:
+#   1. GitHub -> Settings -> Developer settings -> Fine-grained personal access
+#      tokens -> edit the token -> Repository permissions -> set
+#      "Workflows" to Read and write.
+#   2. git mv ci/deploy.yml .github/workflows/deploy.yml
+#   3. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository
+#      secrets. Until they exist the deploy job skips itself with a notice,
+#      so pushes stay green.
+#
+# Alternatively paste this file into .github/workflows/deploy.yml through the
+# GitHub web editor, which uses your session rather than a token and is not
+# subject to that restriction.
+# ---------------------------------------------------------------------------
+
+name: Deploy to Cloudflare
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # cloudflare/build.sh needs the .NET SDK to publish the Blazor app.
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      # Wrangler 4 refuses to run on Node 20, and ubuntu-latest ships Node 20.
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install Wrangler
+        working-directory: cloudflare
+        run: npm ci || npm install
+
+      # Publishes the Blazor app into cloudflare/dist.
+      - name: Build
+        working-directory: cloudflare
+        run: ./build.sh
+
+      # Skip cleanly rather than failing while the secrets are still unset, so a
+      # fresh clone of this repo does not show a red X on every push.
+      - name: Check Cloudflare credentials are configured
+        id: creds
+        env:
+          API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$API_TOKEN" ] && [ -n "$ACCOUNT_ID" ]; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Deploy skipped. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to enable it."
+          fi
+
+      # ---------------------------------------------------------------- Workers
+      # Primary target. Needs two repository secrets:
+      #   CLOUDFLARE_API_TOKEN   - API token with "Workers Scripts: Edit"
+      #   CLOUDFLARE_ACCOUNT_ID  - from the dashboard overview page
+      - name: Deploy to Workers
+        if: steps.creds.outputs.available == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          wranglerVersion: "4"
+          command: deploy --config cloudflare/wrangler.jsonc
+
+      # ----------------------------------------------------------------- Pages
+      # Alternative target, off by default. To use it instead of the above:
+      #   1. build with ./build.sh --pages so dist/_routes.json is emitted,
+      #   2. create the Pages project once, then uncomment this step.
+      # - name: Deploy to Pages
+      #   uses: cloudflare/wrangler-action@v3
+      #   with:
+      #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      #     wranglerVersion: "4"
+      #     command: pages deploy cloudflare/dist --project-name justwatch-search
+
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install
+        working-directory: cloudflare
+        run: npm ci || npm install
+
+      - name: Build
+        working-directory: cloudflare
+        run: ./build.sh
+
+      # Runs the real Worker locally and replays the app's full API call chain
+      # against the live JustWatch endpoint.
+      - name: Start Worker
+        working-directory: cloudflare
+        run: npx wrangler dev --ip 127.0.0.1 --port 8787 &
+
+      - name: Wait for the Worker to come up
+        run: |
+          for i in $(seq 1 60); do
+            curl -sf http://127.0.0.1:8787/ >/dev/null && echo "ready after ${i}s" && exit 0
+            sleep 1
+          done
+          echo "Worker did not start"; exit 1
+
+      - name: Run the verification suite
+        working-directory: cloudflare
+        run: python3 verify.py http://127.0.0.1:8787 workers
