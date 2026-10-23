@@ -5,6 +5,8 @@ cloudflare/.publish/
 # --- Cloudflare / Node ---
 node_modules/
 .wrangler/
+.dotnet/
+.dotnet-install.sh
 .dev.vars
 .dev.vars.*
 

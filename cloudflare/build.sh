@@ -14,19 +14,39 @@ TARGET="${1:-workers}"
 
 # --- locate the .NET SDK -----------------------------------------------------
 if ! command -v dotnet >/dev/null 2>&1; then
-	for candidate in "$HOME/.dotnet/dotnet" /usr/share/dotnet/dotnet /usr/local/share/dotnet/dotnet /opt/dotnet/dotnet; do
+	# ./.dotnet first: a previous run may already have bootstrapped it, and
+	# re-downloading 200 MB on every rebuild is pointless.
+	for candidate in "$PWD/.dotnet/dotnet" "$(dirname "$0")/.dotnet/dotnet" "$HOME/.dotnet/dotnet" /usr/share/dotnet/dotnet /usr/local/share/dotnet/dotnet /opt/dotnet/dotnet; do
 		if [ -x "$candidate" ]; then
-			export DOTNET_ROOT="$(dirname "$candidate")"
+			export DOTNET_ROOT="$(cd "$(dirname "$candidate")" && pwd)"
 			export PATH="$DOTNET_ROOT:$PATH"
 			break
 		fi
 	done
 fi
 
+DOTNET_VERSION="${DOTNET_VERSION:-8.0}"
+
 if ! command -v dotnet >/dev/null 2>&1; then
-	echo "error: the .NET 8 SDK was not found on PATH." >&2
-	echo "       install it from https://dotnet.microsoft.com/download/dotnet/8.0" >&2
-	exit 1
+	# Cloudflare's build image ships .NET 3.1.302 with no way to select another
+	# version, which cannot build a net8.0 Blazor app. Both Cloudflare's own
+	# Blazor/Pages guide and the community do the same thing: install the SDK
+	# into the build directory as part of the build. Skipped when dotnet is
+	# already on PATH, so local builds are unaffected.
+	if [ "${BOOTSTRAP_DOTNET:-1}" = "1" ]; then
+		echo "dotnet not found - installing the .NET ${DOTNET_VERSION} SDK into ./.dotnet"
+		curl -sSL --retry 3 https://dot.net/v1/dotnet-install.sh -o .dotnet-install.sh
+		chmod +x .dotnet-install.sh
+		./.dotnet-install.sh --channel "$DOTNET_VERSION" --install-dir ./.dotnet --no-path
+		rm -f .dotnet-install.sh
+		export DOTNET_ROOT="$PWD/.dotnet"
+		export PATH="$DOTNET_ROOT:$PATH"
+	else
+		echo "error: the .NET ${DOTNET_VERSION} SDK was not found on PATH." >&2
+		echo "       install it from https://dotnet.microsoft.com/download/dotnet/8.0" >&2
+		echo "       or unset BOOTSTRAP_DOTNET=0 to let this script fetch it." >&2
+		exit 1
+	fi
 fi
 
 export DOTNET_CLI_TELEMETRY_OPTOUT=1
