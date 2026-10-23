@@ -1,0 +1,44 @@
+{
+	// JSON schema for editor autocompletion. Created by `npm install`.
+	"$schema": "node_modules/wrangler/config-schema.json",
+
+	// Name of the Worker. Becomes https://justwatch-search.<your-subdomain>.workers.dev
+	"name": "justwatch-search",
+
+	// THE single program: static Blazor app + API proxy in one script.
+	"main": "src/index.js",
+
+	// Set this to today's date when you first deploy.
+	"compatibility_date": "2026-10-23",
+
+	"assets": {
+		// Output of `dotnet publish` (see build.sh).
+		"directory": "./dist",
+
+		// Lets src/index.js fall through to the static files via env.ASSETS.fetch().
+		"binding": "ASSETS",
+
+		// Blazor routes like /title/tm305113 and /search?q=dune are client-side only,
+		// so a hard refresh on them must return index.html with 200 instead of 404.
+		"not_found_handling": "single-page-application",
+
+		// Without this, the SPA fallback above would swallow /proxy/* and hand back
+		// index.html. Scoping it to /proxy/* means every other request that matches
+		// a real file is still served from the edge for free, without running code.
+		"run_worker_first": ["/proxy/*"]
+	},
+
+	// Proxy target allowlist + CORS policy. Read by src/index.js.
+	"vars": {
+		"ALLOWED_UPSTREAM_HOSTS": "apis.justwatch.com"
+		// Uncomment only if you host the Blazor frontend somewhere else and need
+		// that site to call this proxy cross-origin:
+		// "ALLOW_EXTERNAL_ORIGINS": "true"
+		// Or pin exact origins instead:
+		// "ALLOWED_ORIGINS": "https://app.example.com,https://staging.example.com"
+	},
+
+	"observability": {
+		"enabled": true
+	}
+}
