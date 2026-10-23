@@ -2,8 +2,8 @@
 	// JSON schema for editor autocompletion. Created by `npm install`.
 	"$schema": "node_modules/wrangler/config-schema.json",
 
-	// Name of the Worker. Becomes https://justwatch-search.<your-subdomain>.workers.dev
-	"name": "justwatch-search",
+	// Name of the Worker. Becomes https://justwatch.<your-subdomain>.workers.dev
+	"name": "justwatch",
 
 	// THE single program: static Blazor app + API proxy in one script.
 	"main": "src/index.js",
