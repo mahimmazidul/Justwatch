@@ -167,7 +167,7 @@ npx wrangler login   # once
 npm run deploy       # ./build.sh && wrangler deploy
 ```
 
-Serves `https://justwatch-search.<your-subdomain>.workers.dev`. Rename it via
+Serves `https://justwatch.<your-subdomain>.workers.dev`. Rename it via
 `name` in `wrangler.jsonc`.
 
 ## Deploy — Pages

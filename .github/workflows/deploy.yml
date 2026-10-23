@@ -111,7 +111,7 @@ jobs:
       # Alternative target, off by default. To use it instead of the step above:
       #   1. build with ./build.sh --pages so dist/_routes.json is emitted,
       #   2. create the Pages project once (wrangler pages project create
-      #      justwatch-search), then swap the command below in.
+      #      justwatch), then swap the command below in.
       # - name: Deploy to Pages
       #   if: steps.creds.outputs.available == 'true'
       #   uses: cloudflare/wrangler-action@v4
@@ -119,4 +119,4 @@ jobs:
       #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       #     workingDirectory: cloudflare
-      #     command: pages deploy dist --project-name justwatch-search
+      #     command: pages deploy dist --project-name justwatch

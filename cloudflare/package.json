@@ -1,5 +1,5 @@
 {
-	"name": "justwatch-search",
+	"name": "justwatch",
 	"version": "1.0.0",
 	"private": true,
 	"type": "module",
@@ -9,7 +9,7 @@
 		"dev": "./build.sh && wrangler dev --ip 0.0.0.0 --port 8787",
 		"deploy": "./build.sh && wrangler deploy",
 		"dev:pages": "./build.sh --pages && wrangler pages dev dist --ip 0.0.0.0 --port 8788",
-		"deploy:pages": "./build.sh --pages && wrangler pages deploy dist --project-name justwatch-search",
+		"deploy:pages": "./build.sh --pages && wrangler pages deploy dist --project-name justwatch",
 		"tail": "wrangler tail"
 	},
 	"devDependencies": {
