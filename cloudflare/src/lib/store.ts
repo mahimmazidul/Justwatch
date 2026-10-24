@@ -1,18 +1,37 @@
-import { db } from "@/db";
-import { searchEvents, watchlistItems } from "@/db/schema";
 import { and, desc, eq, gte, sql } from "drizzle-orm";
+import { getDb } from "@/db";
+import { searchEvents, watchlistItems } from "@/db/schema";
 import type { JWTitleSummary } from "./justwatch";
 
-/* All DB access is failure-tolerant: if the tables are missing or the
- * connection drops, callers get graceful fallbacks instead of a 500. */
+/* Persistence runs on Cloudflare D1. All access is failure-tolerant exactly as
+ * it was against Postgres: if the binding is missing, the tables are not
+ * migrated, or a query fails, callers get graceful fallbacks instead of a 500.
+ * getDb() resolving to null means "no database available" and takes the same
+ * path.
+ *
+ * SQLite has no uuid() or CURRENT_TIMESTAMP column default, so both are
+ * assigned here at insert time. */
 
 export function logSearchEvent(query: string, resultsCount: number, market: string): void {
   const normalized = query.trim().toLowerCase().replace(/\s+/g, " ");
   if (!normalized || normalized.length < 2) return;
-  void db
-    .insert(searchEvents)
-    .values({ query: query.trim().slice(0, 120), normalized: normalized.slice(0, 120), resultsCount, market })
-    .catch(() => undefined);
+  // Fire and forget: telemetry must never delay or break a search response.
+  void (async () => {
+    try {
+      const db = await getDb();
+      if (!db) return;
+      await db.insert(searchEvents).values({
+        id: crypto.randomUUID(),
+        query: query.trim().slice(0, 120),
+        normalized: normalized.slice(0, 120),
+        resultsCount,
+        market,
+        createdAt: new Date(),
+      });
+    } catch {
+      /* telemetry is best-effort */
+    }
+  })();
 }
 
 export interface TrendingSearch {
@@ -31,12 +50,15 @@ const FALLBACK_TRENDING: TrendingSearch[] = [
 
 export async function getTrendingSearches(limit = 8): Promise<TrendingSearch[]> {
   try {
+    const db = await getDb();
+    if (!db) return FALLBACK_TRENDING;
     const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const rows = await db
       .select({
         normalized: searchEvents.normalized,
         label: sql<string>`max(${searchEvents.query})`,
-        count: sql<number>`count(*)::int`,
+        // SQLite count() already returns an integer; Postgres needed the ::int cast.
+        count: sql<number>`count(*)`,
       })
       .from(searchEvents)
       .where(gte(searchEvents.createdAt, since))
@@ -44,7 +66,7 @@ export async function getTrendingSearches(limit = 8): Promise<TrendingSearch[]> 
       .orderBy(desc(sql`count(*)`))
       .limit(limit);
     if (rows.length === 0) return FALLBACK_TRENDING;
-    return rows.map((r) => ({ label: r.label, count: r.count }));
+    return rows.map((r) => ({ label: r.label, count: Number(r.count) }));
   } catch {
     return FALLBACK_TRENDING;
   }
@@ -62,6 +84,8 @@ export interface WatchlistRow {
 
 export async function listWatchlist(anonId: string): Promise<WatchlistRow[]> {
   try {
+    const db = await getDb();
+    if (!db) return [];
     return await db
       .select({
         nodeId: watchlistItems.nodeId,
@@ -82,9 +106,12 @@ export async function listWatchlist(anonId: string): Promise<WatchlistRow[]> {
 
 export async function addToWatchlist(anonId: string, title: JWTitleSummary): Promise<boolean> {
   try {
+    const db = await getDb();
+    if (!db) return false;
     await db
       .insert(watchlistItems)
       .values({
+        id: crypto.randomUUID(),
         anonId,
         nodeId: title.id,
         objectType: title.objectType,
@@ -92,6 +119,7 @@ export async function addToWatchlist(anonId: string, title: JWTitleSummary): Pro
         year: title.year,
         posterUrl: title.poster,
         fullPath: title.fullPath,
+        createdAt: new Date(),
       })
       .onConflictDoNothing();
     return true;
@@ -102,6 +130,8 @@ export async function addToWatchlist(anonId: string, title: JWTitleSummary): Pro
 
 export async function removeFromWatchlist(anonId: string, nodeId: string): Promise<boolean> {
   try {
+    const db = await getDb();
+    if (!db) return false;
     await db
       .delete(watchlistItems)
       .where(and(eq(watchlistItems.anonId, anonId), eq(watchlistItems.nodeId, nodeId)));
