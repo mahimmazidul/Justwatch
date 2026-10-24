@@ -1,87 +1,134 @@
 # Justwatch
 
 Search any film or series and see **every** streaming, rental and purchase offer
-for it, across all ~54 countries JustWatch covers, with prices normalised to USD.
+for it, across all 54 countries JustWatch covers, with prices normalised to USD.
 
-Built as a Blazor WebAssembly app and deployed to Cloudflare as a **single
-program** — one Worker serving both the static frontend and the API proxy it needs.
+A Next.js app deployed to Cloudflare as **one Worker**: server rendering, the API
+routes and the static assets all come from a single script.
 
 ```
-browser ──► Cloudflare Worker ──┬──► static Blazor app   (edge-cached, free, unlimited)
-                                └──► /proxy/*  ─────────► apis.justwatch.com
+browser ──► Cloudflare Worker ──┬──► /_next/static/*  (edge-served, free, unmetered)
+                                ├──► SSR + /api/*     ──► apis.justwatch.com
+                                │                    └──► open.er-api.com  (FX rates)
+                                └──► D1 (optional)    ──► watchlist, trending searches
 ```
+
+The JustWatch API sends no `Access-Control-Allow-Origin` header, so a browser may
+not call it directly. That used to require a separate CORS proxy container; here
+the calls happen inside the Worker, which is not subject to CORS at all. There is
+no proxy to maintain, harden or route around.
 
 ---
-
-## Why the proxy exists
-
-`apis.justwatch.com` answers an `OPTIONS` preflight with `204` but sends **no
-`Access-Control-Allow-Origin` header**, so a browser is not allowed to call it
-directly from a web page. The request has to be relayed server-side.
-
-The upstream project solved this with a separate Node.js/Express container behind
-nginx, run via `docker-compose`. This repository replaces all three of those with
-roughly 250 lines of dependency-free Worker code:
-
-| Before | After |
-|---|---|
-| `nginx` — static serving, `.wasm` MIME type, `/proxy/` rewrite | Cloudflare static assets (sets `application/wasm` automatically) |
-| `cors-proxy` — Node + Express + `request` (deprecated since 2020) | `cloudflare/src/proxy.js` — plain `fetch`, zero dependencies |
-| `docker-compose.yml` — two containers | `npx wrangler deploy` |
-
-Because the app and the proxy now share one origin, the browser never preflights
-these calls at all.
-
-### Hardening
-
-The proxy this replaces was fully open — `Access-Control-Allow-Origin: *` and a
-forward to any URL the caller supplied, which on a public deployment is an abuse
-and SSRF vector. `cloudflare/src/proxy.js` instead:
-
-- allowlists upstream hosts — rejects `example.com`, `169.254.169.254`, `10.0.0.1`, `localhost`
-- rejects non-`http(s)` schemes such as `file://`
-- accepts same-origin callers only by default
-- forwards a small header allowlist, so cookies and Cloudflare-internal headers
-  (`CF-Connecting-IP`, `CF-IPCountry`) are not leaked upstream
-- strips hop-by-hop headers and `content-encoding`/`content-length` from responses
-- answers `OPTIONS` itself rather than forwarding it
 
 ## Repository layout
 
 ```
-source/      The Blazor WebAssembly application (C#, .NET 8)
-cloudflare/  Everything needed to deploy it as one Cloudflare program
-  ├─ src/index.js                Workers entry point: routes /proxy/* vs static assets
-  ├─ src/proxy.js                The proxy. Shared by both deployment shapes.
-  ├─ functions/proxy/[[url]].js  Pages entry point, delegates to src/proxy.js
-  ├─ wrangler.jsonc              Worker name, assets dir, SPA fallback, routing, vars
-  ├─ build.sh                    dotnet publish -> cloudflare/dist
-  └─ verify.py                   36-check end-to-end test suite
-.github/workflows/deploy.yml     Push-to-deploy: verify on every push, then deploy
-LICENSE                          GNU GPL v3.0 (required by the upstream app)
-CREDITS.md                       Attribution and licence details
+cloudflare/    The deployed application — Next.js 16 + the Worker that serves it
+  ├─ src/app/                  Routes: /, /search, /title/[id], /watchlist, /api/*
+  ├─ src/lib/justwatch.ts      GraphQL queries and the offer-normalisation layer
+  ├─ src/lib/store.ts          D1 persistence (watchlist, search telemetry)
+  ├─ src/db/                   Drizzle schema and the D1 connection
+  ├─ src/assets/fonts/         Five self-hosted woff2 files + their OFL licences
+  ├─ migrations/0000_init.sql  D1 schema, applied by wrangler
+  ├─ open-next.config.ts       OpenNext adapter configuration
+  ├─ wrangler.jsonc            Worker name, bindings, compatibility flags
+  ├─ build.sh                  Config checks, then next build + the Worker bundle
+  ├─ fetch-fonts.py            Re-downloads the font files if they go missing
+  └─ verify.py                 65-check end-to-end test suite
+source/        The original Blazor WebAssembly app. Retained for history and
+               attribution under GPL-3.0; it is no longer built or deployed.
+.github/workflows/deploy.yml   Push-to-deploy: verify on every push, then deploy
+LICENSE                        GNU GPL v3.0 (required by the upstream app)
+CREDITS.md                     Attribution and licence details
 ```
 
 ## Prerequisites
 
-- **.NET 8 SDK** — <https://dotnet.microsoft.com/download/dotnet/8.0>
-- **Node.js 22 or newer** — Wrangler 4 refuses to start on Node 20
-- A Cloudflare account; the free tier is enough
+- **Node.js 20 or newer** — Wrangler 4 refuses to start on Node 18, and Next 16
+  needs Node 20. Node 22 is what CI uses.
+- A Cloudflare account; the free tier is enough.
+- No .NET SDK. `source/` is not part of the build.
 
 ## Run locally
 
 ```bash
 cd cloudflare
 npm install
-npm run dev          # publishes the app, then runs the real Worker on :8787
+npm run dev          # Next dev server, wired to the Cloudflare runtime
 ```
 
-`wrangler dev` runs `workerd`, the actual production runtime — not a simulator.
+`next.config.ts` calls `initOpenNextCloudflareForDev()`, which gives the dev
+server the real bindings, so D1 works locally too once it is enabled.
 
-> The publish step needs roughly 1 GB of free RAM. On a small machine the .NET IL
-> linker is killed by the OOM reaper with `error MSB6006: "dotnet" exited with
-> code 137`. Close other processes, or add `-p:PublishTrimmed=false` to the
-> `dotnet publish` line in `build.sh`.
+To run the actual production Worker instead:
+
+```bash
+cd cloudflare
+npm run preview      # ./build.sh, then wrangler dev on :8787
+```
+
+## Deploy
+
+```bash
+cd cloudflare
+npx wrangler login   # once
+npm run deploy       # ./build.sh && opennextjs-cloudflare deploy
+```
+
+Serves `https://justwatch.<your-subdomain>.workers.dev`. The Worker is named in
+`wrangler.jsonc`; changing `name` creates a **second** Worker rather than
+updating this one.
+
+Pushes to `main` deploy automatically through GitHub Actions once the two
+repository secrets below exist.
+
+### The optional D1 database
+
+The watchlist and the "trending searches" rail are backed by D1. Everything else
+works without it, so the binding ships **empty** — `"d1_databases": []` — and the
+site builds and deploys with no setup at all, and with no Cloudflare account
+needed to build it locally. When D1 is absent:
+
+- `/api/health` reports `database: "not-configured"`
+- `/api/watchlist` returns `503`, and the button says why instead of failing silently
+- `/watchlist` explains that storage is not configured
+- `/api/trending` returns a static fallback list
+
+#### On deploy, CI provisions it
+
+Push to `main` and the workflow creates the database, writes the binding into
+`wrangler.jsonc`, applies `migrations/` and then builds and deploys — in that
+order, because the build reads that config. There is nothing to create by hand
+and no database id to commit.
+
+`cloudflare/d1-setup.sh` does the work and is safe to re-run. It looks the
+database up **by name** and creates one only when nothing matches, so a second run
+reuses the first database instead of making another: `wrangler d1 create` is not
+idempotent, which is why the script lists before it creates. The `wrangler.jsonc`
+edit lives only for the duration of that CI run, which is enough, because the next
+run resolves the same database by name again.
+
+The token needs **D1 → Edit** on top of Workers Script Edit; the "Edit Cloudflare
+Workers" template alone does not include it. If the permission is missing the
+workflow emits a warning, removes the binding and deploys anyway rather than
+failing, because everything except the watchlist and the trending rail works
+without a database.
+
+#### Locally, or by hand
+
+```bash
+cd cloudflare
+./d1-setup.sh            # create if absent, bind it, apply migrations --remote
+./d1-setup.sh --status   # report what is bound right now, change nothing
+./d1-setup.sh --disable  # remove the binding again
+```
+
+Then `npm run deploy`. To keep the binding permanently, commit the resulting
+`wrangler.jsonc` change; to leave the repository clean, run `--disable` before
+you commit.
+
+`build.sh` refuses to build if a binding still names the placeholder id, so a
+half-finished setup cannot ship.
 
 ## Cloudflare credentials
 
@@ -113,24 +160,10 @@ This **is** a secret. Never commit it — `.gitignore` here blocks `.dev.vars` a
    unless you are attaching a custom domain on one.
 5. **Continue to summary** → **Create Token**, then copy it — it is shown once.
 
-That template grants exactly what `wrangler deploy` needs and nothing more:
-
-| Permission | Resource | Access |
-|---|---|---|
-| Workers Scripts | Account | Write |
-| Workers Routes | Zone | Write |
-| Workers KV Storage | Account | Write |
-| Workers R2 Storage | Account | Write |
-| Workers Tail | Account | Read |
-| Account Settings | Account | Read |
-| User Details / User Memberships | User | Read |
-
-Source: [API token templates](https://developers.cloudflare.com/fundamentals/api/reference/template/).
 Do **not** use the *Read All Resources* template — it can read everything and write
 nothing, so `wrangler deploy` fails with an authentication error.
 
-If you deploy to **Pages** as well, add the **Cloudflare Pages → Edit** permission to
-the same token.
+Source: [API token templates](https://developers.cloudflare.com/fundamentals/api/reference/template/)
 
 Docs: [Create API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/) ·
 [GitHub Actions for Workers](https://developers.cloudflare.com/workers/ci-cd/external-cicd/github-actions/)
@@ -157,93 +190,82 @@ export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ACCOUNT_ID=...
 ```
 
 **For local `wrangler dev`**, secrets go in `cloudflare/.dev.vars` — already
-gitignored. The `vars` in `wrangler.jsonc` are not secrets and are safe to commit.
-
-## Deploy — Workers (recommended)
-
-```bash
-cd cloudflare
-npx wrangler login   # once
-npm run deploy       # ./build.sh && wrangler deploy
-```
-
-Serves `https://justwatch.<your-subdomain>.workers.dev`. Rename it via
-`name` in `wrangler.jsonc`.
-
-## Deploy — Pages
-
-The same code also deploys to Cloudflare Pages, using `functions/proxy/[[url]].js`
-instead of a Worker script. Behaviour is identical.
-
-```bash
-cd cloudflare
-npm run deploy:pages
-```
-
-Two Pages details this repo already handles:
-
-- **`[[url]].js`, not `[...url].js`.** Cloudflare Pages uses double brackets for a
-  catch-all. The Next.js/Vercel spelling is rejected by Wrangler with
-  *"Invalid Pages function route parameter"*.
-- **`dist/_routes.json`** (emitted by `build.sh --pages`) restricts Function
-  invocations to `/proxy/*`. Without it, Pages invokes a Function for *every*
-  request once a `functions/` directory exists, burning the 100k/day free
-  allowance on ordinary page loads.
-
-### One behavioural difference between the platforms
-
-| Proxy URL form | Workers | Pages |
-|---|---|---|
-| `/proxy/apis.justwatch.com/graphql` ← used by the app | 200 | 200 |
-| `/proxy/https:/apis.justwatch.com/graphql` | 200 | 200 |
-| `/proxy/https://apis.justwatch.com/graphql` | 200 | **307 → 405** |
-
-Pages normalises merged slashes with a `307` before your Function runs, and a
-`POST` cannot follow it. This is why `source/JustWatchSearch/Program.cs` uses the
-host-only form. All three forms still work on Workers.
-
-## Configuration
-
-Set under `vars` in `cloudflare/wrangler.jsonc`, in the dashboard, or in
-`cloudflare/.dev.vars` locally:
-
-| Variable | Default | Purpose |
-|---|---|---|
-| `ALLOWED_UPSTREAM_HOSTS` | `apis.justwatch.com` | Comma-separated host allowlist |
-| `ALLOWED_ORIGINS` | *(unset)* | Comma-separated browser origins allowed to call the proxy |
-| `ALLOW_EXTERNAL_ORIGINS` | *(unset)* | `"true"` lets any origin call the proxy |
+gitignored. Copy `.dev.vars.example` to start.
 
 ## Tests
 
 ```bash
 cd cloudflare
-python3 verify.py http://127.0.0.1:8787 workers   # while npm run dev is running
-python3 verify.py http://127.0.0.1:8788 pages     # while npm run dev:pages is running
+npm run typecheck
+npm run lint
+npm run preview &                                   # in another shell
+python3 verify.py http://127.0.0.1:8787
 ```
 
-36 checks: static serving, `application/wasm` MIME type, Blazor deep-link SPA
-fallback, the full live JustWatch call chain (search → `/content/urls` locale list
-→ the 54-country `GetTitleOffers` query → `GetTitleNode`), CORS preflight, every
-hardening rule above, and backwards compatibility with the old proxy's URL forms.
+`next build` does **not** type-check: `next.config.ts` sets
+`typescript.ignoreBuildErrors`, because running the checker a second time inside
+the build roughly doubles its peak memory (Next also generates `.next/types`
+there) and that was enough to get the build OOM-killed on a small machine.
+`npm run typecheck` is a separate CI step on every push, so nothing is skipped —
+it is just not done twice in one process. Next 16 does not run ESLint during
+`next build` at all, so `npm run lint` is the only place that happens.
+
+`verify.py` runs **65 checks** against a live Worker: every route, the 404 path,
+the self-hosted font files and their cache headers, the requested content changes,
+all four JustWatch API routes and their cache policies, the removal of the old
+`/proxy/*` layer, multi-market offer coverage with USD normalisation, and the
+watchlist CRUD cycle.
+
+The database checks adapt to what they find. `/api/health` reports whether D1 is
+bound; with it bound the suite exercises save, duplicate-guard, delete, cookie
+isolation and search telemetry (65 checks, 0 skipped). Without it the suite asserts
+the degraded behaviour instead and skips the rest (59 checks, 1 skip). Either way a
+green run means the deployment is correct for its configuration.
+
 It calls the real JustWatch API, so it needs network access.
 
-## Cost and limits — free tier
+## Free-tier budget
+
+Measured from `wrangler deploy --dry-run` and the built output:
 
 | | Allowance | This app |
 |---|---|---|
-| Static asset requests | Free, unlimited | The whole Blazor app |
-| Files per Worker version | 20,000 | **219** |
-| Largest single file | 25 MiB | **2.8 MiB** (`dotnet.native.wasm`) |
-| Worker invocations | 100,000/day | Only `/proxy/*` |
-| CPU per invocation | 10 ms | One `fetch`, no parsing |
+| Worker bundle, uncompressed | 64 MiB | **5.5 MiB** |
+| Worker bundle, compressed | *no limit since 2026-09-04* | 1.2 MiB |
+| Files per Worker version | 20,000 | **24** |
+| Largest single static asset | 25 MiB | **224 KB** (a JS chunk) |
+| Worker invocations | 100,000/day | one per SSR page or API call |
+| Subrequests per invocation | 50 | ~4 on a title page |
+| D1 rows read | 5,000,000/day | a handful per watchlist page |
 
-`assets.run_worker_first` is scoped to `["/proxy/*"]`, so requests for real files
-are served from the edge without invoking the Worker and cost nothing. One search
-plus one title view is roughly 4 invocations.
+Requests for `/_next/static/*` are served from the edge as static assets and never
+invoke the Worker, so the JS, CSS and font payload is unmetered. `public/_headers`
+marks those files `immutable` for a year.
 
-The 20 MB of assets is mostly the .NET runtime. `dotnet publish` already emits
-Brotli and gzip variants of every file and Blazor's boot loader negotiates them,
-so the real first-load transfer is considerably smaller.
+Two things worth knowing before relying on the free tier:
+
+- **CPU is 10 ms per invocation on Free.** A server-rendered React page can exceed
+  that, where the previous static-Blazor deployment could not. If a route starts
+  returning error 1102, the Workers Paid plan ($5/month) raises the limit to 30 s.
+  This cannot be measured locally, only against a real deployment.
+- **Cloudflare's CDN does not cache HTML or extensionless JSON by default**, so the
+  `s-maxage` values the API routes set are honoured by browsers and by any cache you
+  configure, but not automatically at the edge. Adding a Cache Rule for `/api/jw/*`
+  would cut invocations substantially, since those responses change slowly.
+
+## What changed from the Blazor version
+
+| Before | Now |
+|---|---|
+| Blazor WebAssembly, ~20 MB of .NET runtime shipped to the browser | Next.js, 866 KB of static assets |
+| A hand-written CORS proxy (`src/proxy.js`) with a host allowlist | No proxy: the Worker calls JustWatch server-side |
+| Two deployment shapes, Workers and Pages | Workers only — OpenNext does not target Pages |
+| Browser made every data call through the proxy | The Worker makes them server-side; the rendered HTML references no external origin at all |
+| No persistence | Optional D1 for the watchlist and search telemetry |
+| `verify.py`, 36 proxy-contract checks | `verify.py`, 65 app-level checks |
+
+`source/` is unchanged and still builds with the .NET 8 SDK if you want the
+original app; it is simply no longer what gets deployed.
 
 ## Licence
 
@@ -253,7 +275,7 @@ This repository contains a modified version of
 [NoBraincellsLeft/JustWatch-Search](https://github.com/NoBraincellsLeft/JustWatch-Search),
 which is GPL-3.0. Copyleft therefore applies to the combined work as a whole — any
 redistribution, including of the Cloudflare deployment layer, must remain GPL-3.0.
-Full attribution and a list of the modifications made are in
+Full attribution, including the fonts and their SIL Open Font Licences, is in
 [`CREDITS.md`](CREDITS.md).
 
 Not affiliated with or endorsed by JustWatch GmbH. "JustWatch" is their trademark.
