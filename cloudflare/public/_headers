@@ -1,0 +1,8 @@
+# https://developers.cloudflare.com/workers/static-assets/headers
+# https://opennext.js.org/cloudflare/caching#static-assets-caching
+#
+# Next's build output is content-hashed, so it can be cached for a year.
+# These requests are served from the edge as static assets and never invoke
+# the Worker, which is what keeps them off the 100k/day request budget.
+/_next/static/*
+  Cache-Control: public,max-age=31536000,immutable

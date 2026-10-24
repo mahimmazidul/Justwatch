@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local development (that file is gitignored).
+#
+# Selects which set of Next .env values the worker runtime loads.
+# Set by `opennextjs-cloudflare migrate`; leave as development locally.
+NEXTJS_ENV=development

@@ -1,94 +1,91 @@
 #!/usr/bin/env bash
 #
-# Publishes the Blazor WebAssembly app into ./dist, which is the directory
-# Cloudflare uploads as static assets for BOTH deployment shapes:
+# Builds the Next.js app into a Cloudflare Worker bundle.
 #
-#   Workers:  wrangler deploy                  (reads assets.directory in wrangler.jsonc)
-#   Pages:    wrangler pages deploy dist       (takes the directory as an argument)
+#   ./build.sh              build (what CI and `npm run deploy` call)
+#   ./build.sh --check      validate the configuration only, do not build
+#
+# Output lands in .open-next/: worker.js is the Worker entry point named by
+# wrangler.jsonc, and assets/ holds the static client bundle that Cloudflare
+# serves from the edge without invoking the Worker.
 #
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# --pages additionally emits dist/_routes.json, which Pages needs (see below).
-TARGET="${1:-workers}"
+CHECK_ONLY=0
+[ "${1:-}" = "--check" ] && CHECK_ONLY=1
 
-# --- locate the .NET SDK -----------------------------------------------------
-if ! command -v dotnet >/dev/null 2>&1; then
-	# ./.dotnet first: a previous run may already have bootstrapped it, and
-	# re-downloading 200 MB on every rebuild is pointless.
-	for candidate in "$PWD/.dotnet/dotnet" "$(dirname "$0")/.dotnet/dotnet" "$HOME/.dotnet/dotnet" /usr/share/dotnet/dotnet /usr/local/share/dotnet/dotnet /opt/dotnet/dotnet; do
-		if [ -x "$candidate" ]; then
-			export DOTNET_ROOT="$(cd "$(dirname "$candidate")" && pwd)"
-			export PATH="$DOTNET_ROOT:$PATH"
-			break
-		fi
-	done
+fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
+note() { printf '%s\n' "$1"; }
+
+# --- Node version -----------------------------------------------------------
+# Wrangler 4 refuses to run on Node 18 and below, and Next 16 needs Node 20+.
+command -v node >/dev/null 2>&1 || fail "node was not found on PATH"
+NODE_MAJOR="$(node -p 'process.versions.node.split(".")[0]')"
+if [ "$NODE_MAJOR" -lt 20 ]; then
+	fail "Node 20 or newer is required (found $(node -v))"
 fi
 
-DOTNET_VERSION="${DOTNET_VERSION:-8.0}"
+# --- D1 binding -------------------------------------------------------------
+# The watchlist and trending-searches features need a D1 database. Creating one
+# needs Cloudflare credentials, so it cannot be done from this script; the state
+# is checked here instead of failing cryptically inside wrangler later.
+#
+# `d1_databases` ships as an empty array, so the normal case is no binding at
+# all. Comments are still stripped first so that a hand-written commented-out
+# example cannot be mistaken for a live binding, and so that a placeholder id
+# left behind by an interrupted ./d1-setup.sh is caught rather than deployed.
+WRANGLER_ACTIVE="$(sed -E '/^[[:space:]]*\/\//d; s:[[:space:]]//.*$::' wrangler.jsonc)"
+# `|| true` because grep exits 1 when there is no binding, which is the normal
+# state here, not an error - and pipefail would otherwise abort the build.
+DB_ID="$(printf '%s\n' "$WRANGLER_ACTIVE" \
+	| { grep -o '"database_id"[[:space:]]*:[[:space:]]*"[^"]*"' || true; } | head -1 \
+	| sed 's/.*"\([^"]*\)"$/\1/')"
+if [ -z "$DB_ID" ]; then
+	note "note: no D1 binding - the site builds and deploys, but the watchlist"
+	note "      and trending rail stay inert. Run ./d1-setup.sh to provision one,"
+	note "      which needs Cloudflare credentials, or let CI do it on deploy."
+elif [ "$DB_ID" = "REPLACE_WITH_D1_DATABASE_ID" ]; then
+	cat >&2 <<'MSG'
+error: wrangler.jsonc names a D1 binding but database_id is still the
+placeholder, so wrangler would reject the deploy.
 
-if ! command -v dotnet >/dev/null 2>&1; then
-	# Cloudflare's build image ships .NET 3.1.302 with no way to select another
-	# version, which cannot build a net8.0 Blazor app. Both Cloudflare's own
-	# Blazor/Pages guide and the community do the same thing: install the SDK
-	# into the build directory as part of the build. Skipped when dotnet is
-	# already on PATH, so local builds are unaffected.
-	if [ "${BOOTSTRAP_DOTNET:-1}" = "1" ]; then
-		echo "dotnet not found - installing the .NET ${DOTNET_VERSION} SDK into ./.dotnet"
-		curl -sSL --retry 3 https://dot.net/v1/dotnet-install.sh -o .dotnet-install.sh
-		chmod +x .dotnet-install.sh
-		./.dotnet-install.sh --channel "$DOTNET_VERSION" --install-dir ./.dotnet --no-path
-		rm -f .dotnet-install.sh
-		export DOTNET_ROOT="$PWD/.dotnet"
-		export PATH="$DOTNET_ROOT:$PATH"
-	else
-		echo "error: the .NET ${DOTNET_VERSION} SDK was not found on PATH." >&2
-		echo "       install it from https://dotnet.microsoft.com/download/dotnet/8.0" >&2
-		echo "       or unset BOOTSTRAP_DOTNET=0 to let this script fetch it." >&2
-		exit 1
-	fi
+Resolve it automatically (creates the database if it does not exist yet, then
+applies the migrations):
+
+    ./d1-setup.sh
+
+or drop the binding and deploy without persistence:
+
+    ./d1-setup.sh --disable
+MSG
+	exit 1
+else
+	note "D1 binding: justwatch-db ($DB_ID)"
 fi
 
-export DOTNET_CLI_TELEMETRY_OPTOUT=1
-export DOTNET_NOLOGO=1
-
-# --- publish -----------------------------------------------------------------
-rm -rf .publish dist
-dotnet publish ../source/JustWatchSearch/JustWatchSearch.csproj -c Release -o .publish --nologo
-
-cp -R .publish/wwwroot dist
-
-# NOTE: deliberately no dist/_redirects file.
-#
-# The old Pages recipe for single-page apps was `/* /index.html 200`. Cloudflare
-# Pages now runs on the Workers static-assets engine, which strips `.html` and
-# `/index` from URLs itself — so that rule matches its own output and Cloudflare
-# rejects the whole deploy with "Infinite loop detected in this rule [code: 100324]".
-#
-# SPA fallback is already covered twice over without it:
-#   - Workers: assets.not_found_handling = "single-page-application" in wrangler.jsonc
-#   - Pages:   built-in SPA detection, because dist/ has no top-level 404.html
-#
-# Both make /title/tm305113 and /search?q=dune return index.html with HTTP 200.
-
-rm -rf .publish
-
-if [ "$TARGET" = "--pages" ] || [ "$TARGET" = "pages" ]; then
-	# Pages-only: the moment a project has a functions/ directory, Pages invokes a
-	# Function for EVERY request by default — including all 219 static files, which
-	# burns the 100k/day free allowance on plain page loads. _routes.json restricts
-	# invocations to /proxy/* so the Blazor app itself stays free and edge-cached.
-	#
-	# Workers does not use this file; it gets the same effect from
-	# assets.run_worker_first = ["/proxy/*"] in wrangler.jsonc.
-	cat > dist/_routes.json <<'JSON'
-{
-  "version": 1,
-  "include": ["/proxy/*"],
-  "exclude": []
-}
-JSON
-	printf 'dist/_routes.json written (Pages: Functions run on /proxy/* only)\n'
+if [ "$CHECK_ONLY" = "1" ]; then
+	note "configuration OK"
+	exit 0
 fi
 
-printf 'dist/ ready: %s, %s files\n' "$(du -sh dist | cut -f1)" "$(find dist -type f | wc -l | tr -d ' ')"
+# --- dependencies -----------------------------------------------------------
+if [ ! -d node_modules ]; then
+	note "installing dependencies"
+	npm ci --no-audit --no-fund 2>/dev/null || npm install --no-audit --no-fund
+fi
+
+# --- build ------------------------------------------------------------------
+# `opennextjs-cloudflare build` runs `next build` and then converts the output
+# into the Worker bundle, so there is no separate next build step here.
+note "building the Worker bundle"
+npx opennextjs-cloudflare build
+
+[ -f .open-next/worker.js ] || fail ".open-next/worker.js was not produced"
+[ -d .open-next/assets ] || fail ".open-next/assets was not produced"
+
+ASSET_FILES="$(find .open-next/assets -type f | wc -l | tr -d ' ')"
+printf '\n.open-next/ ready: worker %s, %s static assets, %s total\n' \
+	"$(du -h .open-next/worker.js | cut -f1)" \
+	"$ASSET_FILES" \
+	"$(du -sh .open-next | cut -f1)"
