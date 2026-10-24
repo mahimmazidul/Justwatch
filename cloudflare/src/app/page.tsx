@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { Suspense } from "react";
-import { ArrowRight, ArrowUpRight, Flame } from "lucide-react";
+import { ArrowUpRight, Flame } from "lucide-react";
 import { popularTitles, type JWTitleSummary } from "@/lib/justwatch";
 import { readMarket } from "@/lib/anon";
 import { MARKET_LIST } from "@/lib/markets";
@@ -10,7 +10,6 @@ import { TitleCard } from "@/components/title-card";
 import { Rail } from "@/components/rail";
 import { Reveal } from "@/components/reveal";
 import { PosterMarquee, TextMarquee } from "@/components/marquee";
-import { CountUp } from "@/components/count-up";
 
 export const metadata = { title: "JustWatch Search — Find where to watch anything, anywhere" };
 
@@ -89,25 +88,6 @@ export default async function HomePage() {
       </section>
 
       <TextMarquee />
-
-      {/* ------------------------------ STATS ----------------------------- */}
-      <section className="mx-auto max-w-[1440px] px-5 py-16 sm:px-8">
-        <div className="grid grid-cols-2 gap-px overflow-hidden rounded-2xl border border-[var(--color-line)] bg-[var(--color-line)] md:grid-cols-4">
-          {[
-            { to: MARKET_LIST.length, suffix: "", label: "Markets indexed" },
-            { to: 100, suffix: "+", label: "Streaming providers" },
-            { to: 4, suffix: "", label: "Offer types compared" },
-            { to: 1, suffix: "", label: "GraphQL query per title" },
-          ].map((s, i) => (
-            <Reveal key={s.label} delay={i * 90} className="bg-[var(--color-bg-2)] p-6 sm:p-8">
-              <div className="display text-4xl text-[var(--color-ink)] sm:text-5xl">
-                <CountUp to={s.to} suffix={s.suffix} />
-              </div>
-              <div className="label mt-3">{s.label}</div>
-            </Reveal>
-          ))}
-        </div>
-      </section>
 
       {/* ------------------------------ RAILS ----------------------------- */}
       <section className="mx-auto max-w-[1440px] space-y-16 px-5 pb-10 sm:px-8">
@@ -220,7 +200,6 @@ export default async function HomePage() {
           </Reveal>
         </div>
       </section>
-      <ArrowRight className="hidden" />
     </div>
   );
 }
