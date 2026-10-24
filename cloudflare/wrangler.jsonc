@@ -2,41 +2,61 @@
 	// JSON schema for editor autocompletion. Created by `npm install`.
 	"$schema": "node_modules/wrangler/config-schema.json",
 
-	// Name of the Worker. Becomes https://justwatch.<your-subdomain>.workers.dev
+	// Same Worker name as the previous deployment, so the existing URL keeps
+	// working: https://justwatch.<your-subdomain>.workers.dev
+	// Changing this creates a SECOND Worker instead of updating this one.
 	"name": "justwatch",
 
-	// THE single program: static Blazor app + API proxy in one script.
-	"main": "src/index.js",
+	// OpenNext's generated Worker entry point. Do not point this at src/.
+	"main": ".open-next/worker.js",
 
-	// Set this to today's date when you first deploy.
-	"compatibility_date": "2026-10-23",
+	"compatibility_date": "2026-10-24",
+
+	// Both flags are required by @opennextjs/cloudflare:
+	//   nodejs_compat                - Next.js uses Node builtins internally
+	//   global_fetch_strictly_public - fetch() must not hit the Worker's own cache
+	"compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
 
 	"assets": {
-		// Output of `dotnet publish` (see build.sh).
-		"directory": "./dist",
-
-		// Lets src/index.js fall through to the static files via env.ASSETS.fetch().
-		"binding": "ASSETS",
-
-		// Blazor routes like /title/tm305113 and /search?q=dune are client-side only,
-		// so a hard refresh on them must return index.html with 200 instead of 404.
-		"not_found_handling": "single-page-application",
-
-		// Without this, the SPA fallback above would swallow /proxy/* and hand back
-		// index.html. Scoping it to /proxy/* means every other request that matches
-		// a real file is still served from the edge for free, without running code.
-		"run_worker_first": ["/proxy/*"]
+		// Next's client bundle, emitted by `opennextjs-cloudflare build`.
+		// Served straight from the edge and unmetered on the free plan.
+		"directory": ".open-next/assets",
+		"binding": "ASSETS"
 	},
 
-	// Proxy target allowlist + CORS policy. Read by src/index.js.
-	"vars": {
-		"ALLOWED_UPSTREAM_HOSTS": "apis.justwatch.com"
-		// Uncomment only if you host the Blazor frontend somewhere else and need
-		// that site to call this proxy cross-origin:
-		// "ALLOW_EXTERNAL_ORIGINS": "true"
-		// Or pin exact origins instead:
-		// "ALLOWED_ORIGINS": "https://app.example.com,https://staging.example.com"
-	},
+	"services": [
+		{
+			// Self-reference binding used by OpenNext for cache revalidation.
+			// The service name must match "name" above.
+			// https://opennext.js.org/cloudflare/caching
+			"binding": "WORKER_SELF_REFERENCE",
+			"service": "justwatch"
+		}
+	],
+
+	// D1 database -- ships empty so the Worker builds and deploys with no
+	// Cloudflare account at all. Everything except the watchlist and the
+	// trending-searches rail works without a binding: src/lib/store.ts falls
+	// back to defaults when getDb() returns null, /api/health reports
+	// "not-configured", and the watchlist UI says so instead of failing quietly.
+	//
+	// ./d1-setup.sh fills this in. It looks the database up by name first and
+	// only creates it if nothing matches, because `wrangler d1 create` is not
+	// idempotent and would otherwise make a second database on every run. It
+	// then applies migrations/ against it. CI runs it on every deploy, so
+	// enabling persistence needs no commit and no manual step.
+	//
+	// The Cloudflare token needs D1 Edit as well as Workers Script Edit; the
+	// "Edit Cloudflare Workers" template alone is not enough.
+	"d1_databases": [],
+
+	// Deliberately no "r2_buckets" and no "images" binding:
+	//   - R2 would only be used as Next's incremental cache, and this app has no
+	//     ISR, no generateStaticParams and no revalidateTag, so there is nothing
+	//     to cache. Route responses already carry their own Cache-Control.
+	//   - images.unoptimized is set in next.config.ts, so next/image never asks
+	//     the runtime to transform anything (posters arrive pre-sized from
+	//     images.justwatch.com). Skipping it avoids a paid Images subscription.
 
 	"observability": {
 		"enabled": true
