@@ -4,6 +4,7 @@ import Link from "next/link";
 import { Bookmark, Compass } from "lucide-react";
 import { readAnonId } from "@/lib/anon";
 import { listWatchlist } from "@/lib/store";
+import { isDatabaseConfigured } from "@/db";
 import { kindLabel } from "@/lib/format";
 import { WatchlistButton } from "@/components/watchlist-button";
 
@@ -11,7 +12,7 @@ export const metadata: Metadata = { title: "Watchlist" };
 export const dynamic = "force-dynamic";
 
 export default async function WatchlistPage() {
-  const anonId = await readAnonId();
+  const [anonId, storageReady] = await Promise.all([readAnonId(), isDatabaseConfigured()]);
   const items = anonId ? await listWatchlist(anonId) : [];
 
   return (
@@ -32,10 +33,23 @@ export default async function WatchlistPage() {
       {items.length === 0 ? (
         <div className="hairline-card grid place-items-center px-8 py-24 text-center">
           <Bookmark size={28} strokeWidth={1.4} className="text-[var(--color-faint)]" />
-          <p className="display mt-6 text-2xl sm:text-3xl">Nothing saved yet</p>
+          <p className="display mt-6 text-2xl sm:text-3xl">
+            {storageReady ? "Nothing saved yet" : "Watchlist storage is not configured"}
+          </p>
           <p className="mt-3 max-w-sm text-sm leading-relaxed text-[var(--color-muted)]">
-            Open any title and hit “Add to watchlist” — it will land here, ready for
-            a worldwide price check.
+            {storageReady ? (
+              <>
+                Open any title and hit “Add to watchlist” — it will land here, ready for
+                a worldwide price check.
+              </>
+            ) : (
+              <>
+                This deployment has no D1 database bound, so there is nowhere to save
+                titles. Search and price comparison are unaffected. Binding one is three
+                commands — see the commented block in{" "}
+                <code className="font-mono text-[12px]">cloudflare/wrangler.jsonc</code>.
+              </>
+            )}
           </p>
           <Link
             href="/"
