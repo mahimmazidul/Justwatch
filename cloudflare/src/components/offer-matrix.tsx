@@ -99,14 +99,22 @@ export function OfferMatrix({ bundle }: OfferMatrixProps) {
 
   useEffect(() => {
     const saved = window.localStorage.getItem("ss_currency_mode");
+    // The currency preference is browser-only state, so it has to be read after
+    // mount. Reading it during render or in a lazy useState initializer would
+    // produce markup that differs from the server render and trip React's
+    // hydration check, which is worse than the extra render this rule warns
+    // about - and it only happens once, on the first visit that has a
+    // preference stored.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (saved === "local") setUsd(false);
   }, []);
 
   const toggleCurrency = () => {
-    setUsd((v) => {
-      window.localStorage.setItem("ss_currency_mode", v ? "local" : "usd");
-      return !v;
-    });
+    // Persisted outside the updater on purpose: a state updater must be pure,
+    // and React is allowed to invoke it more than once. The write used to sit
+    // inside it.
+    window.localStorage.setItem("ss_currency_mode", usd ? "local" : "usd");
+    setUsd(!usd);
   };
 
   /* group offers per country once */

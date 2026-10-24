@@ -35,6 +35,11 @@ export function MarketSelect({ current }: { current: string }) {
   }, [filter]);
 
   const choose = (code: string) => {
+    // The market preference is persisted in a cookie so the server can read it
+    // on the next render (readMarket() in src/lib/anon.ts). Assigning to
+    // document.cookie is a deliberate side effect inside an event handler, not
+    // a mutation of anything React owns.
+    // eslint-disable-next-line react-hooks/immutability
     document.cookie = `ss_market=${code};path=/;max-age=${60 * 60 * 24 * 365};samesite=lax`;
     setOpen(false);
     setFilter("");
