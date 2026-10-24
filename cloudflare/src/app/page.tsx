@@ -72,7 +72,15 @@ export default async function HomePage() {
               compare the whole world at a glance.
             </p>
 
-            <div className="rise mt-9 max-w-2xl" style={{ animationDelay: "460ms" }}>
+            {/* `relative z-30` is load-bearing, not decorative. `.rise` animates
+                transform with fill-mode both, so Chromium keeps this element
+                composited after the intro and it becomes a stacking context.
+                That traps the autocomplete's z-40 inside this wrapper, and the
+                next `.rise` sibling below (the trending chips) then paints over
+                the open dropdown and swallows clicks on the top results.
+                Positioning this wrapper above its siblings is what lets the
+                dropdown win. Removing it silently breaks selecting a title. */}
+            <div className="rise relative z-30 mt-9 max-w-2xl" style={{ animationDelay: "460ms" }}>
               <SearchBar market={market} variant="hero" />
             </div>
 
