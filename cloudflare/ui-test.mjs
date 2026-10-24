@@ -241,6 +241,64 @@ try {
     }
     await page.close();
   }
+
+  // ── 6. The watchlist control: the only button that writes ───────────────────
+  // Adapts to what it finds, the way verify.py does. /api/health says whether D1
+  // is bound; with it, the save/remove cycle is exercised for real and then
+  // undone so repeated runs do not accumulate rows. Without it, the button has to
+  // explain itself rather than fake a successful save.
+  console.log("\n/title: the watchlist control");
+  {
+    const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const health = await page.request
+      .get(`${BASE}/api/health`)
+      .then((r) => r.json())
+      .catch(() => ({}));
+    const dbReady = health.database === "ready";
+
+    await page.goto(`${BASE}/title/tm305113`, { waitUntil: "networkidle", timeout: 60000 });
+    await page.waitForTimeout(2500);
+
+    const findButton = () => page.locator("button", { hasText: /watchlist/i }).first();
+    check("the watchlist button renders", (await findButton().count()) > 0);
+
+    if ((await findButton().count()) > 0) {
+      await clickTargetIsClear(page, findButton(), "watchlist button");
+      await tryClick(findButton(), "the watchlist button");
+      await page.waitForTimeout(2500);
+
+      const label = (await findButton().innerText().catch(() => "")).trim();
+      const status = (await page.locator('[role="status"]').first().innerText().catch(() => "")).trim();
+
+      if (dbReady) {
+        check("saving flips the button to the saved state", /in your watchlist/i.test(label),
+          `reads "${label}"`);
+        check("an anonymous id cookie was issued for the save",
+          (await page.context().cookies()).some((c) => c.name === "ss_uid"));
+
+        await page.goto(`${BASE}/watchlist`, { waitUntil: "networkidle", timeout: 60000 });
+        await page.waitForTimeout(2000);
+        check("the saved title appears on /watchlist",
+          (await page.locator('a[href^="/title/"]').count()) > 0);
+
+        await page.goto(`${BASE}/title/tm305113`, { waitUntil: "networkidle", timeout: 60000 });
+        await page.waitForTimeout(2500);
+        if (/in your watchlist/i.test(await findButton().innerText().catch(() => ""))) {
+          await tryClick(findButton(), "the watchlist button a second time");
+          await page.waitForTimeout(2500);
+        }
+        await page.goto(`${BASE}/watchlist`, { waitUntil: "networkidle", timeout: 60000 });
+        await page.waitForTimeout(2000);
+        check("removing it empties the shelf again",
+          (await page.locator('a[href^="/title/"]').count()) === 0);
+      } else {
+        check("without a database the button explains itself instead of faking a save",
+          /not configured/i.test(status) || /not configured/i.test(label),
+          `status reads "${status}", button reads "${label}"`);
+      }
+    }
+    await page.close();
+  }
 } catch (e) {
   // Anything unexpected still has to show up as a failure rather than a crash
   // that skips the summary.
