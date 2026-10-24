@@ -205,7 +205,7 @@ npm run typecheck
 npm run lint
 npm run preview &                                   # in another shell
 python3 verify.py http://127.0.0.1:8787             # 65 HTTP-level checks
-npm run test:ui -- http://127.0.0.1:8787            # 26 checks in a real browser
+npm run test:ui -- http://127.0.0.1:8787            # 29 checks in a real browser
 ```
 
 `next build` does **not** type-check: `next.config.ts` sets
@@ -240,8 +240,15 @@ npm run test:ui -- http://127.0.0.1:8787
 `ui-test.mjs` drives a real Chromium: it types into the search box, waits for the
 autocomplete, clicks a suggestion and asserts the browser actually navigated. It
 covers the hero and compact search bars, the "all results" row, arrow-key plus
-Enter selection, the results grid, the Films/Series filters, the sort chips, and
-the same flows again at a 390×844 viewport. 26 checks, exit code 1 on any failure.
+Enter selection, the results grid, the Films/Series filters, the sort chips, the
+watchlist control, and the same flows again at a 390×844 viewport. Exit code 1
+on any failure.
+
+Like `verify.py` it adapts to whether D1 is bound. With a database it exercises
+the save/remove cycle for real and then undoes it, so repeated runs do not
+accumulate rows — **32 checks**. Without one it asserts the button explains that
+storage is not configured rather than faking a save — **29 checks**. The CI verify
+job has no credentials, so it runs the 29-check path against the local Worker.
 
 It exists because of a bug `verify.py` structurally could not see. The hero
 autocomplete rendered correctly and every suggestion was present in the HTML, so
