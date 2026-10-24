@@ -50,6 +50,10 @@ the rendered HTML references no external origin:
 | [Tailwind CSS](https://github.com/tailwindlabs/tailwindcss) | MIT | styling |
 | [lucide](https://github.com/lucide-icons/lucide) | ISC | icons |
 | [Wrangler](https://github.com/cloudflare/workers-sdk) | MIT OR Apache-2.0 | deploy tooling |
+| [Playwright](https://github.com/microsoft/playwright) | Apache-2.0 | drives Chromium for `ui-test.mjs` |
+
+Wrangler and Playwright are build- and test-time only; neither is in the deployed
+bundle.
 
 Changes made in this repository to the provided application:
 
@@ -80,6 +84,16 @@ Changes made in this repository to the provided application:
   "Streaming providers", "Offer types compared", "GraphQL query per title") and
   with it the now-unused `CountUp` component, an unused `ArrowRight` import and
   the hidden placeholder element that existed only to keep that import alive.
+- **Autocomplete made selectable** — two defects in the search dropdown, both
+  invisible to a markup-level test. The hero suggestions were painted over by the
+  trending chips that follow them, because `.rise` animates `transform` with
+  `animation-fill-mode: both` and Chromium keeps the element composited
+  afterwards, making it a stacking context that trapped the dropdown's `z-40`;
+  `src/app/page.tsx` now positions the search wrapper above its siblings. And the
+  list opened downward with no height cap, so on the hero most suggestions fell
+  below the fold; `src/components/search-bar.tsx` now measures the room on both
+  sides, flips the panel upward when there is not enough space below, caps it to
+  the space it chose, and scrolls the arrow-key highlight into view.
 - **Footer** — links this repository and its licence, states the real cache
   windows instead of an inaccurate "updated hourly", and takes the market count
   from the data rather than hardcoding 54 in two places.
@@ -92,8 +106,8 @@ Changes made in this repository to the provided application:
   side effects that belong where they are.
 - **Added for the deployment**: `open-next.config.ts`, `wrangler.jsonc`,
   `migrations/0000_init.sql`, `drizzle.config.json` (SQLite), `public/_headers`,
-  `.dev.vars.example`, `build.sh`, `verify.py`, `fetch-fonts.py` and
-  `cloudflare-env.d.ts`.
+  `.dev.vars.example`, `build.sh`, `d1-setup.sh`, `verify.py`, `ui-test.mjs`,
+  `fetch-fonts.py` and `cloudflare-env.d.ts`.
 
 The Cloudflare Worker configuration, build script, D1 schema and migration, and
 the test suite were written for this repository and contain no code copied from

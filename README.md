@@ -1,5 +1,7 @@
 # Justwatch
 
+**Live: <https://justwatch.byaislop.workers.dev>**
+
 Search any film or series and see **every** streaming, rental and purchase offer
 for it, across all 54 countries JustWatch covers, with prices normalised to USD.
 
@@ -194,12 +196,16 @@ gitignored. Copy `.dev.vars.example` to start.
 
 ## Tests
 
+Two suites, because they catch different classes of bug: `verify.py` checks what
+the server sends, `ui-test.mjs` checks what a person can actually do with it.
+
 ```bash
 cd cloudflare
 npm run typecheck
 npm run lint
 npm run preview &                                   # in another shell
-python3 verify.py http://127.0.0.1:8787
+python3 verify.py http://127.0.0.1:8787             # 65 HTTP-level checks
+npm run test:ui -- http://127.0.0.1:8787            # 26 checks in a real browser
 ```
 
 `next build` does **not** type-check: `next.config.ts` sets
@@ -223,6 +229,35 @@ the degraded behaviour instead and skips the rest (59 checks, 1 skip). Either wa
 green run means the deployment is correct for its configuration.
 
 It calls the real JustWatch API, so it needs network access.
+
+### Browser interaction tests
+
+```bash
+npx playwright install chromium        # once, downloads ~120 MB
+npm run test:ui -- http://127.0.0.1:8787
+```
+
+`ui-test.mjs` drives a real Chromium: it types into the search box, waits for the
+autocomplete, clicks a suggestion and asserts the browser actually navigated. It
+covers the hero and compact search bars, the "all results" row, arrow-key plus
+Enter selection, the results grid, the Films/Series filters, the sort chips, and
+the same flows again at a 390×844 viewport. 26 checks, exit code 1 on any failure.
+
+It exists because of a bug `verify.py` structurally could not see. The hero
+autocomplete rendered correctly and every suggestion was present in the HTML, so
+all 65 HTTP checks passed — but `.rise` animates `transform` with
+`animation-fill-mode: both`, which leaves Chromium keeping the element composited
+and therefore a stacking context. That trapped the dropdown's `z-40` inside its own
+wrapper, so the *next* `.rise` sibling (the trending chips) painted over the open
+list and swallowed the clicks. The top suggestions were unselectable while every
+status code, header and string assertion stayed green.
+
+So the test asserts clickability directly rather than inferring it from markup:
+for each row it calls `document.elementFromPoint()` at the row's centre and fails
+if the element that would receive the click is not inside that row. That names the
+covering element in the failure message, which is what made this one quick to
+diagnose. The fix is `relative z-30` on the search bar's wrapper in
+`src/app/page.tsx`, with a comment there explaining why it must not be removed.
 
 ## Free-tier budget
 
