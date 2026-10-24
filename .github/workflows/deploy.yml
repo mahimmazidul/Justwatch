@@ -60,6 +60,22 @@ jobs:
         working-directory: cloudflare
         run: python3 verify.py http://127.0.0.1:8787
 
+      # The suite above checks what the server sends. This one drives a real
+      # browser against the same local Worker and checks what a visitor can do:
+      # type, get suggestions, click one, land on the title.
+      #
+      # It is not redundant. A stacked-paint bug once left the top autocomplete
+      # suggestions unclickable while every HTTP check passed, because the markup
+      # and status codes were correct and only a real click could tell. See the
+      # "Browser interaction tests" section of the README.
+      - name: Install Chromium for the interaction tests
+        working-directory: cloudflare
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser interaction tests
+        working-directory: cloudflare
+        run: npm run test:ui -- http://127.0.0.1:8787
+
   # ------------------------------------------------------------------- deploy
   deploy:
     runs-on: ubuntu-latest
