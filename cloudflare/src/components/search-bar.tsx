@@ -21,8 +21,11 @@ export function SearchBar({ market, variant = "hero", initialQuery = "", placeho
   const [open, setOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [active, setActive] = useState(-1);
+  const [placement, setPlacement] = useState<"below" | "above">("below");
+  const [maxHeight, setMaxHeight] = useState(420);
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLUListElement>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
@@ -49,6 +52,44 @@ export function SearchBar({ market, variant = "hero", initialQuery = "", placeho
     document.addEventListener("mousedown", onDoc);
     return () => document.removeEventListener("mousedown", onDoc);
   }, []);
+
+  /* The list scrolls internally once it is taller than the cap below, so the
+     arrow-key highlight has to be dragged into view or it walks off the bottom
+     and the user is selecting a row they cannot see. */
+  useEffect(() => {
+    if (active < 0) return;
+    listRef.current?.children[active]?.scrollIntoView({ block: "nearest" });
+  }, [active]);
+
+  /* Fit the dropdown into the room that actually exists. A fixed max-height does
+     not work here: on the hero the input sits low on the page, so opening
+     downward puts most of the suggestions below the fold where they cannot be
+     clicked. Measure the space on both sides, drop down when there is room and
+     flip up when there is not, and cap the panel to whichever side was chosen.
+     Re-measured on scroll and resize because the input moves with the page. */
+  const measure = useCallback(() => {
+    const el = rootRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const GAP = 10;      // matches the top-/bottom-[calc(100%+10px)] offset
+    const MARGIN = 12;   // keep clear of the viewport edge
+    const below = window.innerHeight - r.bottom - GAP - MARGIN;
+    const above = r.top - GAP - MARGIN;
+    const up = below < 220 && above > below;
+    setPlacement(up ? "above" : "below");
+    setMaxHeight(Math.max(160, Math.min(460, Math.floor(up ? above : below))));
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [open, measure]);
 
   const fetchSuggestions = useCallback(
     async (q: string) => {
@@ -158,8 +199,18 @@ export function SearchBar({ market, variant = "hero", initialQuery = "", placeho
       </div>
 
       {open && results.length > 0 && (
-        <div className="autocomplete-shadow absolute inset-x-0 top-[calc(100%+10px)] z-40 overflow-hidden rounded-2xl border border-[var(--color-line-strong)] bg-[rgba(250,248,243,0.98)] backdrop-blur-xl">
-          <ul>
+        <div
+          style={{ maxHeight }}
+          className={`autocomplete-shadow absolute inset-x-0 z-40 flex flex-col overflow-hidden rounded-2xl border border-[var(--color-line-strong)] bg-[rgba(250,248,243,0.98)] backdrop-blur-xl ${
+            placement === "above" ? "bottom-[calc(100%+10px)]" : "top-[calc(100%+10px)]"
+          }`}
+        >
+          {/* The panel is capped to the space measured above and laid out as a
+              flex column, so the suggestions scroll inside it while the
+              "all results" row stays pinned and reachable. `overscroll-contain`
+              stops the wheel from scrolling the page behind it once the list
+              reaches its end. */}
+          <ul ref={listRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             {results.map((t, i) => (
               <li key={t.id}>
                 <button
@@ -196,7 +247,7 @@ export function SearchBar({ market, variant = "hero", initialQuery = "", placeho
           <button
             type="button"
             onClick={submit}
-            className="flex w-full items-center justify-between border-t border-[var(--color-line)] px-4 py-3 text-left transition-colors hover:bg-[var(--color-panel-2)]"
+            className="flex w-full shrink-0 items-center justify-between border-t border-[var(--color-line)] px-4 py-3 text-left transition-colors hover:bg-[var(--color-panel-2)]"
           >
             <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-[var(--color-muted)]">
               All results for “{query.trim()}”
