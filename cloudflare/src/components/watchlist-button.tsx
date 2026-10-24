@@ -1,0 +1,82 @@
+"use client";
+
+import { useState, useTransition } from "react";
+import { Bookmark, BookmarkCheck, Loader2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+
+interface WatchlistButtonProps {
+  nodeId: string;
+  payload: {
+    id: string;
+    objectType: string;
+    title: string;
+    year: number | null;
+    poster: string | null;
+    fullPath: string;
+  };
+  initialSaved: boolean;
+  compact?: boolean;
+}
+
+export function WatchlistButton({ nodeId, payload, initialSaved, compact }: WatchlistButtonProps) {
+  const router = useRouter();
+  const [saved, setSaved] = useState(initialSaved);
+  const [pending, startTransition] = useTransition();
+
+  const toggle = () => {
+    const next = !saved;
+    setSaved(next); // optimistic
+    startTransition(async () => {
+      try {
+        const res = await fetch(
+          next ? "/api/watchlist" : `/api/watchlist?nodeId=${encodeURIComponent(nodeId)}`,
+          next
+            ? {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              }
+            : { method: "DELETE" }
+        );
+        if (!res.ok) setSaved(!next);
+      } catch {
+        setSaved(!next);
+      }
+      router.refresh();
+    });
+  };
+
+  const Icon = pending ? Loader2 : saved ? BookmarkCheck : Bookmark;
+
+  if (compact) {
+    return (
+      <button
+        type="button"
+        onClick={toggle}
+        aria-label={saved ? "Remove from watchlist" : "Add to watchlist"}
+        className={`grid h-9 w-9 place-items-center rounded-full border transition-colors ${
+          saved
+            ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-[var(--color-on-accent)]"
+            : "border-[var(--color-line-strong)] bg-[rgba(250,248,243,0.8)] text-[var(--color-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+        }`}
+      >
+        <Icon size={15} strokeWidth={1.9} className={pending ? "animate-spin" : ""} />
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={toggle}
+      className={`inline-flex items-center gap-2.5 rounded-full border px-5 py-3 font-mono text-[11px] uppercase tracking-[0.16em] transition-all ${
+        saved
+          ? "border-[var(--color-accent)] bg-[var(--color-accent)] text-[var(--color-on-accent)]"
+          : "border-[var(--color-line-strong)] bg-[rgba(250,248,243,0.7)] text-[var(--color-ink)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+      }`}
+    >
+      <Icon size={14} strokeWidth={2} className={pending ? "animate-spin" : ""} />
+      {saved ? "In your watchlist" : "Add to watchlist"}
+    </button>
+  );
+}
