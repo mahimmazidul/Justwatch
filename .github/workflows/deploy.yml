@@ -7,9 +7,10 @@ on:
 
 jobs:
   # ------------------------------------------------------------------- verify
-  # Runs unconditionally and needs no credentials: builds the Blazor app, starts
-  # the real Worker locally, and replays the app's full call chain against the
-  # live JustWatch API. A green run here means a deploy would serve a working app.
+  # Runs unconditionally and needs no credentials: builds the Worker bundle,
+  # starts it locally, and replays every route and API contract against the live
+  # JustWatch API. This deliberately tests the configuration a fresh clone gets,
+  # with no database bound, so it asserts the degraded behaviour too.
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -17,22 +18,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-
-      # Wrangler 4 refuses to start on the Node 20 that ubuntu-latest ships.
+      # Wrangler 4 refuses to start on the Node 20 that ubuntu-latest ships, and
+      # Next 16 needs Node 20 or newer anyway.
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
 
       - name: Install
         working-directory: cloudflare
-        run: npm ci || npm install
+        run: npm ci
 
-      # Publishes the Blazor app into cloudflare/dist.
+      - name: Typecheck
+        working-directory: cloudflare
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: cloudflare
+        run: npm run lint
+
+      # Builds the Next.js app and converts it into .open-next/worker.js.
       - name: Build
         working-directory: cloudflare
         run: ./build.sh
@@ -43,15 +50,15 @@ jobs:
 
       - name: Wait for the Worker to come up
         run: |
-          for i in $(seq 1 90); do
-            curl -sf http://127.0.0.1:8787/ >/dev/null && echo "ready after ${i}s" && exit 0
+          for i in $(seq 1 120); do
+            curl -sf http://127.0.0.1:8787/api/health >/dev/null && echo "ready after ${i}s" && exit 0
             sleep 1
           done
-          echo "Worker did not start within 90s"; exit 1
+          echo "Worker did not start within 120s"; exit 1
 
       - name: Run the verification suite
         working-directory: cloudflare
-        run: python3 verify.py http://127.0.0.1:8787 workers
+        run: python3 verify.py http://127.0.0.1:8787
 
   # ------------------------------------------------------------------- deploy
   deploy:
@@ -62,23 +69,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup .NET 8
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 8.0.x
-
       - name: Setup Node 22
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: cloudflare/package-lock.json
 
       - name: Install
         working-directory: cloudflare
-        run: npm ci || npm install
-
-      - name: Build
-        working-directory: cloudflare
-        run: ./build.sh
+        run: npm ci
 
       # Skip cleanly rather than failing while the secrets are still unset, so a
       # fresh clone does not show a red X on every push. See the README section
@@ -96,9 +96,42 @@ jobs:
             echo "::notice::Deploy skipped. Add the CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID repository secrets to enable it."
           fi
 
-      # ---------------------------------------------------------------- Workers
-      # Primary target: one Worker serving both the app and its proxy.
+      # Creates the D1 database on the first run, reuses it by name afterwards,
+      # writes the binding into wrangler.jsonc and applies migrations/ - all
+      # before the build reads that config. No manual setup and no committed
+      # database id: the edit lives only for this run, and the next run resolves
+      # the same database again.
+      #
+      # `wrangler d1 create` is not idempotent, which is why d1-setup.sh lists
+      # first and creates only when nothing matches.
+      #
+      # Needs D1 Edit on the API token; the "Edit Cloudflare Workers" template
+      # does not include it. If the permission is missing this warns and deploys
+      # without persistence rather than failing, because everything except the
+      # watchlist and the trending rail works without a database.
+      - name: Provision and bind D1
+        if: steps.creds.outputs.available == 'true'
+        working-directory: cloudflare
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -uo pipefail
+          if ./d1-setup.sh; then
+            echo "D1 is bound and migrated."
+          else
+            echo "::warning::D1 provisioning failed; deploying without it. The watchlist and trending rail stay inert. Most likely cause is a missing D1 Edit permission on the API token - add D1 -> Edit at dash.cloudflare.com/profile/api-tokens and re-run this workflow."
+            ./d1-setup.sh --disable
+          fi
+
+      - name: Build
+        working-directory: cloudflare
+        run: ./build.sh
+
+      # One Worker serving the whole app: SSR, the API routes and the static
+      # assets. OpenNext targets Workers, so there is no Pages variant.
       - name: Deploy to Workers
+        id: deploy
         if: steps.creds.outputs.available == 'true'
         uses: cloudflare/wrangler-action@v4
         with:
@@ -107,16 +140,23 @@ jobs:
           workingDirectory: cloudflare
           command: deploy
 
-      # ----------------------------------------------------------------- Pages
-      # Alternative target, off by default. To use it instead of the step above:
-      #   1. build with ./build.sh --pages so dist/_routes.json is emitted,
-      #   2. create the Pages project once (wrangler pages project create
-      #      justwatch), then swap the command below in.
-      # - name: Deploy to Pages
-      #   if: steps.creds.outputs.available == 'true'
-      #   uses: cloudflare/wrangler-action@v4
-      #   with:
-      #     apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      #     accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      #     workingDirectory: cloudflare
-      #     command: pages deploy dist --project-name justwatch
+      # Re-runs the same suite against the deployed Worker, so a green run means
+      # production works and not just the local build. This is also where the D1
+      # path gets exercised end to end: the verify job has no credentials and so
+      # tests the unbound configuration, while production has the database bound
+      # and /api/health reports "ready", which switches on the extra checks.
+      - name: Verify the deployment
+        if: steps.creds.outputs.available == 'true'
+        working-directory: cloudflare
+        run: |
+          set -euo pipefail
+          url="$(printf '%s' '${{ steps.deploy.outputs.command-output }}' \
+            | grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' | head -1 || true)"
+          if [ -z "$url" ]; then
+            echo "::warning::Could not read the deployed URL from wrangler output; skipping the production check."
+            exit 0
+          fi
+          echo "Verifying $url"
+          # Give the new version a moment to propagate before probing it.
+          sleep 15
+          python3 verify.py "$url"
