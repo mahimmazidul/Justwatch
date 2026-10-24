@@ -1,6 +1,10 @@
 import Link from "next/link";
-import { Bookmark, Compass } from "lucide-react";
+import { ArrowUpRight, Bookmark, Compass } from "lucide-react";
 import { MarketSelect } from "./market-select";
+import { MARKET_LIST } from "@/lib/markets";
+
+/** Where this app is published. Referenced by the footer. */
+const REPO_URL = "https://github.com/mahimmazidul/Justwatch";
 
 function LogoMark({ size = 22 }: { size?: number }) {
   return (
@@ -31,10 +35,10 @@ export function SiteHeader({ market }: { market: string }) {
             <Bookmark size={11} strokeWidth={1.8} />
             Watchlist
           </Link>
-          <a href="/#markets" className="label link-underline hidden items-center gap-1.5 transition-colors hover:text-[var(--color-ink)] lg:flex">
+          <Link href="/#markets" className="label link-underline hidden items-center gap-1.5 transition-colors hover:text-[var(--color-ink)] lg:flex">
             <Compass size={11} strokeWidth={1.8} />
-            54 Markets
-          </a>
+            {MARKET_LIST.length} Markets
+          </Link>
         </nav>
 
         <div className="ml-auto flex items-center gap-3">
@@ -64,13 +68,37 @@ export function SiteFooter() {
           </div>
           <div className="label max-w-md leading-relaxed">
             Availability &amp; pricing data via the public JustWatch API. Not affiliated with
-            or endorsed by JustWatch GmbH. Prices are normalised to USD using daily
-            exchange rates and may differ at checkout.
+            or endorsed by JustWatch GmbH. Prices are normalised to USD using exchange rates
+            refreshed every 12 hours, and may differ at checkout.
           </div>
         </div>
+
         <div className="mt-12 flex flex-col gap-3 border-t border-[var(--color-line)] pt-6 text-[var(--color-faint)] sm:flex-row sm:items-center sm:justify-between">
-          <span className="label">JustWatch Search — a streaming availability engine</span>
-          <span className="label tabular">54 markets · USD-normalised · updated hourly</span>
+          <span className="label flex flex-wrap items-center gap-x-2 gap-y-1">
+            JustWatch Search — a streaming availability engine
+            <span aria-hidden="true">·</span>
+            <a
+              href={REPO_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link-underline inline-flex items-center gap-1 transition-colors hover:text-[var(--color-accent)]"
+            >
+              Source on GitHub
+              <ArrowUpRight size={11} strokeWidth={2.2} />
+            </a>
+            <span aria-hidden="true">·</span>
+            <a
+              href={`${REPO_URL}/blob/main/LICENSE`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="link-underline transition-colors hover:text-[var(--color-accent)]"
+            >
+              GPL-3.0
+            </a>
+          </span>
+          <span className="label tabular">
+            {MARKET_LIST.length} markets · offers cached 10 min · search cached 1 min
+          </span>
         </div>
       </div>
     </footer>
